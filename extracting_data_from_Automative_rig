@@ -3,65 +3,122 @@
 #include <unistd.h>
 #include <linux/input.h>
 #include <errno.h>
-#include <string.h>
 
-#define DEVICE "/dev/input/event6"  // Change if your G29 is on a different event
+#define DEVICE "/dev/input/event6"
 
-int main() {
+/* ---------- Conversion helpers ---------- */
+float steering_to_degree(int value)
+{
+    const float CENTER = 32767.0f;
+    const float MAX_DEGREE = 450.0f;
+    return ((value - CENTER) * MAX_DEGREE) / CENTER;
+}
+
+float pedal_to_percent(int value)
+{
+    const float MAX = 1023.0f;
+    return (value * 100.0f) / MAX;
+}
+
+
+/* ---------- Gear mapping ---------- */
+int gear_from_code(int code)
+{
+    switch (code) {
+        case 300: return 1;
+        case 301: return 2;
+        case 302: return 3;
+        case 303: return 4;
+        case 704: return 5;
+        case 305: return 6;
+        case 705: return -1;  // Reverse
+        default:  return 0;
+    }
+}
+
+int main()
+{
     struct input_event ev;
-    int fd = open(DEVICE, O_RDONLY);
-    
-    if (fd < 0) {
-        perror("Cannot open device");
+    int fd;
+    int current_gear = 0;
+
+    fd = open(DEVICE, O_RDONLY);
+      if (fd < 0) {
+        perror("Cannot open input device");
         return 1;
     }
 
-    printf("Monitoring Logitech G29 events on %s...\n", DEVICE);
-    printf("Press Ctrl+C to exit.\n");
+    printf("=== Logitech G29 Input Monitor ===\n");
+    printf("Steering (deg), Pedals (%%), Gears\n");
+    printf("Press Ctrl+C to exit\n\n");
 
     while (1) {
-        ssize_t n = read(fd, &ev, sizeof(ev));
-        if (n == (ssize_t)-1) {
-            if (errno == EINTR)
-                continue;
-            else
-                break;
-        } else if (n != sizeof(ev)) {
-            fprintf(stderr, "Unexpected read size\n");
-            break;
-        }
+        if (read(fd, &ev, sizeof(ev)) != sizeof(ev))
+            continue;
 
-        // Button events
-        if (ev.type == EV_KEY) {
-            printf("Button code %d %s\n", ev.code, ev.value ? "pressed" : "released");
-        }
-
-        // Analog events (wheel / pedals / D-pad)
+        /* ---------- AXES (wheel + pedals) ---------- */
         if (ev.type == EV_ABS) {
-            switch(ev.code) {
+            switch (ev.code) {
                 case ABS_X:
-                    printf("Steering wheel: %d\n", ev.value);
+                    printf("Steering: %7.1f deg\n",
+                           steering_to_degree(ev.value));
                     break;
-                case ABS_Y:
-                    printf("Clutch Pedal: %d\n", ev.value);
-                    break;
+
                 case ABS_Z:
-                    printf("Accelerator pedal: %d\n", ev.value);
+                    printf("Accelerator: %6.1f %%\n",
+                           pedal_to_percent(ev.value));
                     break;
+
                 case ABS_RZ:
-                    printf("Break pedal: %d\n", ev.value);
+                    printf("Brake:       %6.1f %%\n",
+                           pedal_to_percent(ev.value));
                     break;
-                case ABS_HAT0X:
-                    printf("D-pad horizontal: %d\n", ev.value);
-                    break;
-                case ABS_HAT0Y:
-                    printf("D-pad vertical: %d\n", ev.value);
-                    break;
-                default:
-                    // Other axes
+
+                case ABS_Y:
+                    printf("Clutch:      %6.1f %%\n",
+                           pedal_to_percent(ev.value));
                     break;
             }
         }
+
+        /* ---------- GEARS ---------- */
+        if (ev.type == EV_KEY) {
+
+            /* Gear engaged */
+            if (ev.value == 1) {
+                            int gear = gear_from_code(ev.code);
+
+                if (gear != 0) {
+                    current_gear = gear;
+
+                    if (gear == -1)
+                        printf("Gear: REVERSE\n");
+                    else
+                        printf("Gear: %d\n", gear);
+                }
+            }
+
+            /* Gear released → Neutral */
+            if (ev.value == 0) {
+                int gear = gear_from_code(ev.code);
+                if (gear != 0) {
+                    current_gear = 0;
+                    printf("Gear: NEUTRAL\n");
+                }
+            }
+        }
+        if (ev.type == EV_ABS) {
+        if (ev.code == ABS_HAT0X) {
+        if (ev.value == -1) printf("D-pad LEFT\n");
+        else if (ev.value == 1) printf("D-pad RIGHT\n");
+        }
+
+        if (ev.code == ABS_HAT0Y) {
+        if (ev.value == -1) printf("D-pad UP\n");
+        else if (ev.value == 1) printf("D-pad DOWN\n");
+       }
+       }
+
     }
 
     close(fd);
