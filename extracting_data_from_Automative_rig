@@ -1,0 +1,69 @@
+#include <stdio.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <linux/input.h>
+#include <errno.h>
+#include <string.h>
+
+#define DEVICE "/dev/input/event6"  // Change if your G29 is on a different event
+
+int main() {
+    struct input_event ev;
+    int fd = open(DEVICE, O_RDONLY);
+    
+    if (fd < 0) {
+        perror("Cannot open device");
+        return 1;
+    }
+
+    printf("Monitoring Logitech G29 events on %s...\n", DEVICE);
+    printf("Press Ctrl+C to exit.\n");
+
+    while (1) {
+        ssize_t n = read(fd, &ev, sizeof(ev));
+        if (n == (ssize_t)-1) {
+            if (errno == EINTR)
+                continue;
+            else
+                break;
+        } else if (n != sizeof(ev)) {
+            fprintf(stderr, "Unexpected read size\n");
+            break;
+        }
+
+        // Button events
+        if (ev.type == EV_KEY) {
+            printf("Button code %d %s\n", ev.code, ev.value ? "pressed" : "released");
+        }
+
+        // Analog events (wheel / pedals / D-pad)
+        if (ev.type == EV_ABS) {
+            switch(ev.code) {
+                case ABS_X:
+                    printf("Steering wheel: %d\n", ev.value);
+                    break;
+                case ABS_Y:
+                    printf("Clutch Pedal: %d\n", ev.value);
+                    break;
+                case ABS_Z:
+                    printf("Accelerator pedal: %d\n", ev.value);
+                    break;
+                case ABS_RZ:
+                    printf("Break pedal: %d\n", ev.value);
+                    break;
+                case ABS_HAT0X:
+                    printf("D-pad horizontal: %d\n", ev.value);
+                    break;
+                case ABS_HAT0Y:
+                    printf("D-pad vertical: %d\n", ev.value);
+                    break;
+                default:
+                    // Other axes
+                    break;
+            }
+        }
+    }
+
+    close(fd);
+    return 0;
+}
