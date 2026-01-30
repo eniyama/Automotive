@@ -16,8 +16,16 @@ float steering_to_degree(int value)
 
 float pedal_to_percent(int value)
 {
-    const float MAX = 1023.0f;
-    return (value * 100.0f) / MAX;
+    const float PEDAL_MIN = 0.0f;    // fully pressed
+    const float PEDAL_MAX = 255.0f;  // released
+
+    // clamp
+    if (value < PEDAL_MIN) value = PEDAL_MIN;
+    if (value > PEDAL_MAX) value = PEDAL_MAX;
+
+    // map & invert
+    float percent = (value - PEDAL_MIN) * 100.0f / (PEDAL_MAX - PEDAL_MIN);
+    return 100.0f - percent;
 }
 
 
