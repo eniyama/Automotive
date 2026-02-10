@@ -94,20 +94,36 @@ Rectangle {
         onTriggered: {
             indicatorCode = can_speed.sendIndicator()
             if (indicatorCode !== lastIndicatorCode) {
-                lastIndicatorCode = indicatorCode
                 if (indicatorCode === 292) {
-                    rightIndicatorActive = true
-                    leftIndicatorActive = false
-                    indicatorBlinkOn = true
-                    blink_timer.restart()
-                    duration_timer.restart()
+                    if (rightIndicatorActive) {
+                        rightIndicatorActive = false
+                        leftIndicatorActive = false
+                        indicatorBlinkOn = false
+                        blink_timer.stop()
+                        duration_timer.stop()
+                    } else {
+                        rightIndicatorActive = true
+                        leftIndicatorActive = false
+                        indicatorBlinkOn = true
+                        blink_timer.restart()
+                        duration_timer.restart()
+                    }
                 } else if (indicatorCode === 293) {
-                    leftIndicatorActive = true
-                    rightIndicatorActive = false
-                    indicatorBlinkOn = true
-                    blink_timer.restart()
-                    duration_timer.restart()
+                    if (leftIndicatorActive) {
+                        leftIndicatorActive = false
+                        rightIndicatorActive = false
+                        indicatorBlinkOn = false
+                        blink_timer.stop()
+                        duration_timer.stop()
+                    } else {
+                        leftIndicatorActive = true
+                        rightIndicatorActive = false
+                        indicatorBlinkOn = true
+                        blink_timer.restart()
+                        duration_timer.restart()
+                    }
                 }
+                lastIndicatorCode = indicatorCode
             }
         }
     }
@@ -133,6 +149,7 @@ Rectangle {
         onTriggered: {
             leftIndicatorActive = false
             rightIndicatorActive = false
+            lastIndicatorCode = 0
         }
     }
     Timer{
@@ -280,9 +297,9 @@ Rectangle {
         id: left_indicator
         x: gear_num.x - width - (root.width * 0.01)
         y: gear_num.y - height - (root.height * 0.01)
-        width: root.width * 0.05
-        height: root.height * 0.06
-        source: "images_2/arrow_left.png"
+        width: root.width * 0.07
+        height: root.height * 0.08
+        source: "cluser_demo_images/left_sgl.png"
         visible: leftIndicatorActive && indicatorBlinkOn
         fillMode: Image.PreserveAspectFit
     }
@@ -290,10 +307,10 @@ Rectangle {
         id: right_indicator
         x: gear_num.x + width
         y: gear_num.y - height - (root.height * 0.01)
-        width: root.width * 0.05
-        height: root.height * 0.06
-        source: "images_2/arrow_left.png"
-        mirror: true
+        width: root.width * 0.07
+        height: root.height * 0.08
+        source: "cluser_demo_images/right_sgl.png"
+        mirror: false
         visible: rightIndicatorActive && indicatorBlinkOn
         fillMode: Image.PreserveAspectFit
     }
@@ -416,7 +433,7 @@ Rectangle {
 
         // Optional overlay text (can remove if not needed)
         Text {
-            text: "Live Camera"
+            text: "Back Camera"
             color: "white"
             anchors.bottom: parent.bottom
             anchors.horizontalCenter: parent.horizontalCenter
