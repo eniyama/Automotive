@@ -13,6 +13,11 @@ Rectangle {
     height: parent ? parent.height : Screen.height
     anchors.fill: parent
     color: "white"
+    focus: true
+    Keys.onPressed: function(event) {
+        if (event.key === Qt.Key_D && (typeof drowsinessDetector !== "undefined" && drowsinessDetector))
+            drowsinessDetector.triggerTestAlert(3000)
+    }
 
     property int arr: 0//hud_id.arr
     property int gear : 0
@@ -32,7 +37,36 @@ Rectangle {
     property bool speedAlertActive: false
     property bool speedAlertBlinkOn: false
     property int speedAlertBlinkMs: 500
+    readonly property int steeringMin: 0
+    readonly property int steeringMax: 65535
+    property int leftLaneThreshold: 16384
+    property int rightLaneThreshold: 49152
+    property bool laneCrossLeft: false
+    property bool laneCrossRight: false
+    property bool laneCrossAlert: false
+    property bool laneCrossAlertBlinkOn: false
+    property int laneCrossAlertBlinkMs: 400
+    property bool drowsinessAlertActive: (typeof drowsinessDetector !== "undefined" && drowsinessDetector) ? drowsinessDetector.drowsinessAlertActive : false
+    property bool drowsinessAlertBlinkOn: false
+    onDrowsinessAlertActiveChanged: if (drowsinessAlertActive) console.log("DROWSINESS ALERT: Driver eyes closed for more than 1 second – show alert on UI.")
+    property int drowsinessAlertBlinkMs: 400
+    property int _lastGearForDrowsiness: -1
     //property int arr: 0
+
+    property bool anyAlertActive: speedAlertActive || laneCrossAlert || drowsinessAlertActive
+    SoundEffect {
+        id: alertSound
+        source: "qrc:/sounds/alert.wav"
+        volume: 1.0
+        loops: SoundEffect.Infinite
+    }
+    onAnyAlertActiveChanged: {
+        if (anyAlertActive) {
+            alertSound.play()
+        } else {
+            alertSound.stop()
+        }
+    }
     property double ref: 0.01//hud_id.ref
     property double ref_bat: 0.01
     property double ref_temp: 0.01
@@ -83,6 +117,9 @@ Rectangle {
                 lastSteering = steering
                 console.log("steering-wheel="+steering)
             }
+            laneCrossLeft = steering < leftLaneThreshold
+            laneCrossRight = steering > rightLaneThreshold
+            laneCrossAlert = laneCrossLeft || laneCrossRight
         }
     }
     Timer{
@@ -166,6 +203,33 @@ Rectangle {
             }
         }
     }
+    Timer {
+        id: lane_cross_alert_blink_timer
+        repeat: true
+        interval: laneCrossAlertBlinkMs
+        running: laneCrossAlert
+        onTriggered: laneCrossAlertBlinkOn = !laneCrossAlertBlinkOn
+        onRunningChanged: {
+            if (!running) laneCrossAlertBlinkOn = false
+        }
+    }
+    Timer {
+        id: drowsiness_alert_blink_timer
+        repeat: true
+        interval: drowsinessAlertBlinkMs
+        running: drowsinessAlertActive
+        onTriggered: drowsinessAlertBlinkOn = !drowsinessAlertBlinkOn
+        onRunningChanged: {
+            if (!running) drowsinessAlertBlinkOn = false
+        }
+    }
+    Component.onCompleted: {
+        if (typeof drowsinessDetector !== "undefined" && drowsinessDetector) {
+            if (gear !== -1)
+                drowsinessDetector.startCamera()
+            console.log("Drowsiness: Press D key to test alert popup. Keep gear out of reverse for camera detection.")
+        }
+    }
     Timer{
         id: timer_gear
         repeat: true
@@ -174,7 +238,18 @@ Rectangle {
 
         onTriggered: {
             gear = can_speed.sendgear()
-           //  console.log("Gear Num"+gear)
+            if (typeof drowsinessDetector !== "undefined" && drowsinessDetector) {
+                if (gear === -1) {
+                    if (_lastGearForDrowsiness !== -1) {
+                        drowsinessDetector.stopCamera()
+                    }
+                } else {
+                    if (_lastGearForDrowsiness === -1) {
+                        drowsinessDetector.startCamera()
+                    }
+                }
+                _lastGearForDrowsiness = gear
+            }
         }
     }
 
@@ -260,20 +335,20 @@ Rectangle {
         y: root.height*0.6666//400
         width: root.width*0.3857 //395
         height: root.height*0.2216//133
+        visible: gear === 0
         source: door == 1 ? "images/door_1.png" : door == 2 ? "images/door_2.png" : door == 3 ? "images/doors_3.png" : door == 4 ? "images/door_4.png" : door == 8 ? "images/door_8.png" : door == 14 ? "images/doors_14.png" : door == 15 ? "images/doors_15.png" : "images_2/car.png"
         fillMode: Image.PreserveAspectFit
-
-        TextEdit {
-            property int total: 86669
-            id: distance
-            x: car.width*0.3468//137
-            y: car.height*0.9646//109
-            width: car.width*0.2 //79
-            height: car.height*0.1503//20
-            text: qsTr("Total ") + total + qsTr(" Kms")
-            font.pixelSize: car.height*0.1130 //15
-            font.family: "Verdana"
-        }
+    }
+    TextEdit {
+        property int total: 86669
+        id: distance
+        x: car.x + car.width*0.3468
+        y: car.y + car.height*0.9646
+        width: car.width*0.2
+        height: car.height*0.1503
+        text: qsTr("Total ") + total + qsTr(" Kms")
+        font.pixelSize: car.height*0.1130
+        font.family: "Verdana"
     }
     Image {
         id: car_front_sceeen
@@ -281,6 +356,7 @@ Rectangle {
         y: root.height*0.6416 //385
         width: root.width*0.0820//84
         height: root.height*0.1033 //62
+        visible: gear === 0
         source: "images_2/car_front_sceeen.png"
         fillMode: Image.PreserveAspectFit
     }
@@ -342,6 +418,63 @@ Rectangle {
             font.bold: true
         }
     }
+    Popup {
+        id: lane_cross_alert_popup
+        modal: false
+        focus: false
+        x: root.width / 2 - width / 2
+        y: root.height * 0.12
+        width: root.width * 0.3
+        height: root.height * 0.1
+        closePolicy: Popup.NoAutoClose
+        visible: laneCrossAlert && laneCrossAlertBlinkOn
+
+        Rectangle {
+            anchors.fill: parent
+            color: root.color
+            border.color: "transparent"
+            border.width: 0
+            radius: 8
+        }
+
+        Text {
+            text: laneCrossLeft ? "\u26A0 Lane cross - Left" : "\u26A0 Lane cross - Right"
+            color: "red"
+            anchors.horizontalCenter: parent.horizontalCenter
+            anchors.verticalCenter: parent.verticalCenter
+            font.pixelSize: parent.height * 0.4
+            font.bold: true
+        }
+    }
+    Popup {
+        id: drowsiness_alert_popup
+       // z: 9999
+        modal: false
+        focus: false
+        x: root.width / 2 - width / 2
+        y: root.height * 0.25
+        width: root.width * 0.35
+        height: root.height * 0.1
+        closePolicy: Popup.NoAutoClose
+        visible: drowsinessAlertActive
+        //dim: false
+
+        Rectangle {
+            anchors.fill: parent
+            color: root.color
+            border.color: "transparent"
+            border.width: 0
+            radius: 8
+        }
+        Text {
+            text: "\u26A0 Drowsiness – eyes closed"
+            color: "red"
+            anchors.horizontalCenter: parent.horizontalCenter
+            anchors.verticalCenter: parent.verticalCenter
+            font.pixelSize: Math.max(14, (drowsiness_alert_popup.height > 0 ? drowsiness_alert_popup.height * 0.4 : 14))
+            font.bold: true
+        }
+    }
     Image {
         id: music_1
         width: root.width * 0.1719 //176
@@ -379,7 +512,7 @@ Rectangle {
             horizontalAlignment: Text.AlignHCenter
             verticalAlignment: Text.AlignVCenter
             elide: Text.ElideMiddle
-            font.pointSize: rectangle.height * 0.07 //5
+            font.pointSize: Math.max(1, rectangle.height * 0.07) // avoid 0 on initial layout (e.g. RPi)
         }
 
         Text{
@@ -404,41 +537,42 @@ Rectangle {
             source: "images_2/arrow_left.png"
         }
     }*/
-    Rectangle {
-        id: rectangle
+    Loader {
+        id: backCameraLoader
+        active: gear === -1
         x: root.width * 0.7393
         y: root.height * 0.11
         width: root.width * 0.2393
         height: root.height * 0.2584
-        radius: 8
-        clip: true
-        visible: gear === -1
+        sourceComponent: Component {
+            Rectangle {
+                radius: 8
+                clip: true
+                anchors.fill: parent
 
-        Camera {
-            id: cameraObj
-            active: true
-        }
-        CaptureSession{
-           id:capturesession
-           camera:cameraObj
-           videoOutput:videoOutput
-        }
-
-        VideoOutput {
-                   id: videoOutput
-                   anchors.fill: parent
-                   fillMode: VideoOutput.PreserveAspectCrop
-                   visible: gear === -1
-               }
-
-        // Optional overlay text (can remove if not needed)
-        Text {
-            text: "Back Camera"
-            color: "white"
-            anchors.bottom: parent.bottom
-            anchors.horizontalCenter: parent.horizontalCenter
-            font.pixelSize: parent.height * 0.08
-            opacity: 0.7
+                Camera {
+                    id: cameraObj
+                    active: true
+                }
+                CaptureSession {
+                    id: capturesession
+                    camera: cameraObj
+                    videoOutput: videoOutput
+                }
+                VideoOutput {
+                    id: videoOutput
+                    anchors.fill: parent
+                    fillMode: VideoOutput.PreserveAspectCrop
+                }
+                Text {
+                    text: "Back Camera"
+                    color: "white"
+                    anchors.bottom: parent.bottom
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    font.pixelSize: parent.height * 0.08
+                    opacity: 0.7
+                }
+            }
         }
     }
 
@@ -851,3 +985,4 @@ Rectangle {
     }
     
 }
+
