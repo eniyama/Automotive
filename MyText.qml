@@ -6,6 +6,8 @@ import QtMultimedia 6.5
 //import QtQuick.Extras 1.4
 import QtQuick.Window 2.0
 
+
+
 Rectangle {
     visible: true
     id: root
