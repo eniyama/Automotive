@@ -13,6 +13,11 @@ Rectangle {
     height: parent ? parent.height : Screen.height
     anchors.fill: parent
     color: "white"
+    focus: true
+    Keys.onPressed: function(event) {
+        if (event.key === Qt.Key_D && (typeof drowsinessDetector !== "undefined" && drowsinessDetector))
+            drowsinessDetector.triggerTestAlert(3000)
+    }
 
     property int arr: 0//hud_id.arr
     property int gear : 0
@@ -28,11 +33,48 @@ Rectangle {
     property int indicatorDurationMs: 8000
     property int indicatorBlinkMs: 500
     property real indicatorGapPx: 2
+    property bool hazardOn: false
+    property bool lastHazardOn: false
+    property bool engineSlideOn: false  // button 288: slide_ON (true) / slide_OFF (false)
     property int speedAlertThreshold: 48
     property bool speedAlertActive: false
     property bool speedAlertBlinkOn: false
     property int speedAlertBlinkMs: 500
+    readonly property int steeringMin: 0
+    readonly property int steeringMax: 65535
+    property int leftLaneThreshold: 16384
+    property int rightLaneThreshold: 49152
+    property bool laneCrossLeft: false
+    property bool laneCrossRight: false
+    property bool laneCrossAlert: false
+    property bool laneCrossAlertBlinkOn: false
+    property int laneCrossAlertBlinkMs: 400
+    property bool drowsinessAlertActive: (typeof drowsinessDetector !== "undefined" && drowsinessDetector) ? drowsinessDetector.drowsinessAlertActive : false
+    property bool drowsinessAlertBlinkOn: false
+    onDrowsinessAlertActiveChanged: if (drowsinessAlertActive) console.log("DROWSINESS ALERT: Driver eyes closed for more than 1 second – show alert on UI.")
+    // Door state from HTTP backend: -1 = use can_speed, 0 = all closed, 15 = all open
+    property int doorStateFromHttp: -1
+    // Engine state from HTTP backend: -1 = use can_speed, 0 = OFF, 1 = ON
+    property int engineSlideFromHttp: -1
+    property int drowsinessAlertBlinkMs: 400
+    property int _lastGearForDrowsiness: -1
+    property bool backCameraWasUsed: false
     //property int arr: 0
+
+    property bool anyAlertActive: speedAlertActive || laneCrossAlert || drowsinessAlertActive
+    SoundEffect {
+        id: alertSound
+        source: "qrc:/sounds/alert.wav"
+        volume: 1.0
+        loops: SoundEffect.Infinite
+    }
+    onAnyAlertActiveChanged: {
+        if (anyAlertActive) {
+            alertSound.play()
+        } else {
+            alertSound.stop()
+        }
+    }
     property double ref: 0.01//hud_id.ref
     property double ref_bat: 0.01
     property double ref_temp: 0.01
@@ -79,10 +121,14 @@ Rectangle {
 
         onTriggered: {
             steering = can_speed.sendSteering()
+            engineSlideOn = (engineSlideFromHttp >= 0) ? (engineSlideFromHttp !== 0) : (can_speed.sendEngineSlide() !== 0)
             if (steering !== lastSteering) {
                 lastSteering = steering
                 console.log("steering-wheel="+steering)
             }
+            laneCrossLeft = steering < leftLaneThreshold
+            laneCrossRight = steering > rightLaneThreshold
+            laneCrossAlert = laneCrossLeft || laneCrossRight
         }
     }
     Timer{
@@ -92,39 +138,55 @@ Rectangle {
         running: true
 
         onTriggered: {
+            hazardOn = (can_speed.sendHazard() !== 0)
             indicatorCode = can_speed.sendIndicator()
-            if (indicatorCode !== lastIndicatorCode) {
-                if (indicatorCode === 292) {
-                    if (rightIndicatorActive) {
-                        rightIndicatorActive = false
-                        leftIndicatorActive = false
-                        indicatorBlinkOn = false
-                        blink_timer.stop()
-                        duration_timer.stop()
-                    } else {
-                        rightIndicatorActive = true
-                        leftIndicatorActive = false
-                        indicatorBlinkOn = true
-                        blink_timer.restart()
-                        duration_timer.restart()
-                    }
-                } else if (indicatorCode === 293) {
-                    if (leftIndicatorActive) {
-                        leftIndicatorActive = false
-                        rightIndicatorActive = false
-                        indicatorBlinkOn = false
-                        blink_timer.stop()
-                        duration_timer.stop()
-                    } else {
-                        leftIndicatorActive = true
-                        rightIndicatorActive = false
-                        indicatorBlinkOn = true
-                        blink_timer.restart()
-                        duration_timer.restart()
-                    }
+            if (hazardOn) {
+                leftIndicatorActive = true
+                rightIndicatorActive = true
+                if (!blink_timer.running)
+                    blink_timer.restart()
+                lastIndicatorCode = 0
+            } else {
+                if (lastHazardOn) {
+                    leftIndicatorActive = false
+                    rightIndicatorActive = false
+                    indicatorBlinkOn = false
+                    blink_timer.stop()
                 }
-                lastIndicatorCode = indicatorCode
+                if (indicatorCode !== lastIndicatorCode) {
+                    if (indicatorCode === 292) {
+                        if (rightIndicatorActive) {
+                            rightIndicatorActive = false
+                            leftIndicatorActive = false
+                            indicatorBlinkOn = false
+                            blink_timer.stop()
+                            duration_timer.stop()
+                        } else {
+                            rightIndicatorActive = true
+                            leftIndicatorActive = false
+                            indicatorBlinkOn = true
+                            blink_timer.restart()
+                            duration_timer.restart()
+                        }
+                    } else if (indicatorCode === 293) {
+                        if (leftIndicatorActive) {
+                            leftIndicatorActive = false
+                            rightIndicatorActive = false
+                            indicatorBlinkOn = false
+                            blink_timer.stop()
+                            duration_timer.stop()
+                        } else {
+                            leftIndicatorActive = true
+                            rightIndicatorActive = false
+                            indicatorBlinkOn = true
+                            blink_timer.restart()
+                            duration_timer.restart()
+                        }
+                    }
+                    lastIndicatorCode = indicatorCode
+                }
             }
+            lastHazardOn = hazardOn
         }
     }
     Timer{
@@ -146,6 +208,7 @@ Rectangle {
         id: duration_timer
         repeat: false
         interval: indicatorDurationMs
+        running: (leftIndicatorActive || rightIndicatorActive) && !hazardOn
         onTriggered: {
             leftIndicatorActive = false
             rightIndicatorActive = false
@@ -166,6 +229,33 @@ Rectangle {
             }
         }
     }
+    Timer {
+        id: lane_cross_alert_blink_timer
+        repeat: true
+        interval: laneCrossAlertBlinkMs
+        running: laneCrossAlert
+        onTriggered: laneCrossAlertBlinkOn = !laneCrossAlertBlinkOn
+        onRunningChanged: {
+            if (!running) laneCrossAlertBlinkOn = false
+        }
+    }
+    Timer {
+        id: drowsiness_alert_blink_timer
+        repeat: true
+        interval: drowsinessAlertBlinkMs
+        running: drowsinessAlertActive
+        onTriggered: drowsinessAlertBlinkOn = !drowsinessAlertBlinkOn
+        onRunningChanged: {
+            if (!running) drowsinessAlertBlinkOn = false
+        }
+    }
+    Component.onCompleted: {
+        if (typeof drowsinessDetector !== "undefined" && drowsinessDetector) {
+            if (gear !== -1)
+                drowsinessDetector.startCamera()
+            console.log("Drowsiness: Press D key to test alert popup. Keep gear out of reverse for camera detection.")
+        }
+    }
     Timer{
         id: timer_gear
         repeat: true
@@ -174,7 +264,20 @@ Rectangle {
 
         onTriggered: {
             gear = can_speed.sendgear()
-           //  console.log("Gear Num"+gear)
+            if (gear === -1)
+                backCameraWasUsed = true
+            if (typeof drowsinessDetector !== "undefined" && drowsinessDetector) {
+                if (gear === -1) {
+                    if (_lastGearForDrowsiness !== -1) {
+                        drowsinessDetector.stopCamera()
+                    }
+                } else {
+                    if (_lastGearForDrowsiness === -1) {
+                        drowsinessDetector.startCamera()
+                    }
+                }
+                _lastGearForDrowsiness = gear
+            }
         }
     }
 
@@ -185,29 +288,38 @@ Rectangle {
         running: true
 
         onTriggered: {
-            //battery
+            //battery: ref_bat in [0,1], progress3.temp in [0.01,1] so flow stays inside arc
             if(progress3.temp >= ref_bat  && progress3.temp < ref_bat+ 0.01 ) {
                 arr_bat = can_speed.sendTemp()
-                //console.log("val======mjb_arr_bat======="+arr_bat)
-                ref_bat = arr_bat/50
-                //console.log("ref--======mjb_ref_bat======="+ref_bat)
+                ref_bat = Math.min(1, Math.max(0, arr_bat / 50))
             }
             if(progress3.temp < ref_bat)
-                progress3.temp = progress3.temp + 0.01
+                progress3.temp = Math.min(1, progress3.temp + 0.01)
             else if(progress3.temp > ref_bat)
-                progress3.temp = progress3.temp - 0.01
+                progress3.temp = Math.max(0.01, progress3.temp - 0.01)
 
-            //temperature
+            //temperature: ref_temp in [0,1], progress4.temp in [0.01,1] so flow stays inside arc
             if(progress4.temp >= ref_temp  && progress4.temp < ref_temp+ 0.01 ) {
                 arr_temp = can_speed.sendFuel()
-                //console.log("val======mjb_temp======="+arr_temp)
-                ref_temp = arr_temp/100
-                //console.log("ref--======mjb_temp======="+ref_temp)
+                ref_temp = Math.min(1, Math.max(0, arr_temp / 100))
             }
             if(progress4.temp < ref_temp)
-                progress4.temp = progress4.temp + 0.01
+                progress4.temp = Math.min(1, progress4.temp + 0.01)
             else if(progress4.temp > ref_temp)
-                progress4.temp = progress4.temp - 0.01
+                progress4.temp = Math.max(0.01, progress4.temp - 0.01)
+        }
+    }
+
+    Connections {
+        target: (typeof doorBackend !== "undefined" && doorBackend) ? doorBackend : null
+        function onDoorStateChanged(doorName, isOpen) {
+            var name = (doorName || "").toLowerCase()
+            if (name === "all") {
+                doorStateFromHttp = isOpen ? 15 : 0
+            }
+        }
+        function onEngineStateChanged(isOn) {
+            engineSlideFromHttp = isOn ? 1 : 0
         }
     }
 
@@ -226,7 +338,7 @@ Rectangle {
             tyre_pressure_icon.tyre = icons & 32
             glowing_bulb.bulb = icons & 64            
             parking_icon.parking = icons & 128
-            car.door = can_speed.sendDoor()
+            car.door = (doorStateFromHttp >= 0) ? doorStateFromHttp : can_speed.sendDoor()
         }
     }
 
@@ -260,20 +372,20 @@ Rectangle {
         y: root.height*0.6666//400
         width: root.width*0.3857 //395
         height: root.height*0.2216//133
+        visible: gear === 0
         source: door == 1 ? "images/door_1.png" : door == 2 ? "images/door_2.png" : door == 3 ? "images/doors_3.png" : door == 4 ? "images/door_4.png" : door == 8 ? "images/door_8.png" : door == 14 ? "images/doors_14.png" : door == 15 ? "images/doors_15.png" : "images_2/car.png"
         fillMode: Image.PreserveAspectFit
-
-        TextEdit {
-            property int total: 86669
-            id: distance
-            x: car.width*0.3468//137
-            y: car.height*0.9646//109
-            width: car.width*0.2 //79
-            height: car.height*0.1503//20
-            text: qsTr("Total ") + total + qsTr(" Kms")
-            font.pixelSize: car.height*0.1130 //15
-            font.family: "Verdana"
-        }
+    }
+    TextEdit {
+        property int total: 86669
+        id: distance
+        x: car.x + car.width*0.3468
+        y: car.y + car.height*0.9646
+        width: car.width*0.2
+        height: car.height*0.1503
+        text: qsTr("Total ") + total + qsTr(" Kms")
+        font.pixelSize: car.height*0.1130
+        font.family: "Verdana"
     }
     Image {
         id: car_front_sceeen
@@ -281,6 +393,7 @@ Rectangle {
         y: root.height*0.6416 //385
         width: root.width*0.0820//84
         height: root.height*0.1033 //62
+        visible: gear === 0
         source: "images_2/car_front_sceeen.png"
         fillMode: Image.PreserveAspectFit
     }
@@ -296,19 +409,19 @@ Rectangle {
     Image {
         id: left_indicator
         x: gear_num.x - width - (root.width * 0.01)
-        y: gear_num.y - height - (root.height * 0.01)
-        width: root.width * 0.07
-        height: root.height * 0.08
+        y: gear_num.y - height + (root.height * 0.02)
+        width: root.width * 0.09
+        height: root.height * 0.10
         source: "cluser_demo_images/left_sgl.png"
         visible: leftIndicatorActive && indicatorBlinkOn
         fillMode: Image.PreserveAspectFit
     }
     Image {
         id: right_indicator
-        x: gear_num.x + width
-        y: gear_num.y - height - (root.height * 0.01)
-        width: root.width * 0.07
-        height: root.height * 0.08
+        x: gear_num.x + width - (root.width * 0.02)
+        y: gear_num.y - height + (root.height * 0.02)
+        width: root.width * 0.09
+        height: root.height * 0.10
         source: "cluser_demo_images/right_sgl.png"
         mirror: false
         visible: rightIndicatorActive && indicatorBlinkOn
@@ -339,6 +452,63 @@ Rectangle {
             anchors.horizontalCenter: parent.horizontalCenter
             anchors.verticalCenter: parent.verticalCenter
             font.pixelSize: parent.height * 0.5
+            font.bold: true
+        }
+    }
+    Popup {
+        id: lane_cross_alert_popup
+        modal: false
+        focus: false
+        x: root.width / 2 - width / 2
+        y: root.height * 0.12
+        width: root.width * 0.3
+        height: root.height * 0.1
+        closePolicy: Popup.NoAutoClose
+        visible: laneCrossAlert && laneCrossAlertBlinkOn
+
+        Rectangle {
+            anchors.fill: parent
+            color: root.color
+            border.color: "transparent"
+            border.width: 0
+            radius: 8
+        }
+
+        Text {
+            text: laneCrossLeft ? "\u26A0 Lane cross - Left" : "\u26A0 Lane cross - Right"
+            color: "red"
+            anchors.horizontalCenter: parent.horizontalCenter
+            anchors.verticalCenter: parent.verticalCenter
+            font.pixelSize: parent.height * 0.4
+            font.bold: true
+        }
+    }
+    Popup {
+        id: drowsiness_alert_popup
+        z: 9999
+        modal: false
+        focus: false
+        x: root.width / 2 - width / 2
+        y: root.height * 0.25
+        width: root.width * 0.35
+        height: root.height * 0.1
+        closePolicy: Popup.NoAutoClose
+        visible: drowsinessAlertActive
+        dim: false
+
+        Rectangle {
+            anchors.fill: parent
+            color: "#FFFFFF"
+            border.color: "red"
+            border.width: 3
+            radius: 8
+        }
+        Text {
+            text: "\u26A0 Drowsiness – eyes closed"
+            color: "red"
+            anchors.horizontalCenter: parent.horizontalCenter
+            anchors.verticalCenter: parent.verticalCenter
+            font.pixelSize: Math.max(14, (drowsiness_alert_popup.height > 0 ? drowsiness_alert_popup.height * 0.4 : 14))
             font.bold: true
         }
     }
@@ -379,7 +549,7 @@ Rectangle {
             horizontalAlignment: Text.AlignHCenter
             verticalAlignment: Text.AlignVCenter
             elide: Text.ElideMiddle
-            font.pointSize: rectangle.height * 0.07 //5
+            font.pointSize: Math.max(1, rectangle.height * 0.07) // avoid 0 on initial layout (e.g. RPi)
         }
 
         Text{
@@ -404,41 +574,71 @@ Rectangle {
             source: "images_2/arrow_left.png"
         }
     }*/
-    Rectangle {
-        id: rectangle
+    Loader {
+        id: backCameraLoader
+        active: gear === -1 || backCameraWasUsed
+        visible: gear === -1
         x: root.width * 0.7393
         y: root.height * 0.11
         width: root.width * 0.2393
         height: root.height * 0.2584
-        radius: 8
-        clip: true
-        visible: gear === -1
+        sourceComponent: Component {
+            Rectangle {
+                id: backCameraRect
+                radius: 8
+                clip: true
+                anchors.fill: parent
+                color: "#1a1a1a"
 
-        Camera {
-            id: cameraObj
-            active: true
-        }
-        CaptureSession{
-           id:capturesession
-           camera:cameraObj
-           videoOutput:videoOutput
-        }
-
-        VideoOutput {
-                   id: videoOutput
-                   anchors.fill: parent
-                   fillMode: VideoOutput.PreserveAspectCrop
-                   visible: gear === -1
-               }
-
-        // Optional overlay text (can remove if not needed)
-        Text {
-            text: "Back Camera"
-            color: "white"
-            anchors.bottom: parent.bottom
-            anchors.horizontalCenter: parent.horizontalCenter
-            font.pixelSize: parent.height * 0.08
-            opacity: 0.7
+                MediaDevices {
+                    id: mediaDevices
+                }
+                property var backCameraDevice: {
+                    var inputs = mediaDevices.videoInputs
+                    if (!inputs || inputs.length === 0) return mediaDevices.defaultVideoInput
+                    if (inputs.length > 1) return inputs[1]
+                    return inputs[0]
+                }
+                Camera {
+                    id: cameraObj
+                    active: false
+                    cameraDevice: backCameraRect.backCameraDevice
+                }
+                CaptureSession {
+                    id: capturesession
+                    camera: cameraObj
+                    videoOutput: videoOutput
+                }
+                VideoOutput {
+                    id: videoOutput
+                    anchors.fill: parent
+                    fillMode: VideoOutput.PreserveAspectCrop
+                }
+                Text {
+                    id: backCameraLabel
+                    text: cameraObj.active ? "Back Camera" : "Starting camera..."
+                    color: "white"
+                    anchors.bottom: parent.bottom
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    font.pixelSize: parent.height * 0.08
+                    opacity: 0.7
+                }
+                Timer {
+                    id: backCameraStartTimer
+                    interval: 450
+                    repeat: false
+                    onTriggered: {
+                        cameraObj.active = true
+                    }
+                }
+                Component.onCompleted: {
+                    backCameraStartTimer.start()
+                }
+                Component.onDestruction: {
+                    backCameraStartTimer.stop()
+                    cameraObj.active = false
+                }
+            }
         }
     }
 
@@ -817,6 +1017,38 @@ Rectangle {
 
       }
 
+    // Engine slide (button 288): slide_ON / slide_OFF below speedometer arc
+    Item {
+        id: engine_slide_container
+        z: 100
+        x: ellipse_45.x - root.width * 0.02
+        width: ellipse_45.width
+        y: ellipse_45.y + ellipse_45.height + root.height * 0.005
+        height: root.height * 0.2
+
+        Text {
+            id: engine_slide_label
+            text: engineSlideOn ? qsTr("Engine_ON") : qsTr("Engine_OFF")
+            color: "#1a1a1a"
+            font.pointSize: 14
+            font.bold: true
+            anchors.horizontalCenter: parent.horizontalCenter
+            anchors.horizontalCenterOffset: -root.width * 0.02
+            anchors.top: parent.top
+        }
+        Image {
+            id: engine_slide_img
+            source: engineSlideOn ? "images/slide_ON.png" : "images/slide_OFF.png"
+            width: parent.width * 0.35
+            height: width
+            anchors.horizontalCenter: parent.horizontalCenter
+            anchors.horizontalCenterOffset: -root.width * 0.02
+            anchors.top: engine_slide_label.bottom
+            anchors.topMargin: root.height * 0.008
+            fillMode: Image.PreserveAspectFit
+        }
+    }
+
     ArcProgressBar {
                 id: progress3
                 property double temp: 0.01
@@ -849,5 +1081,5 @@ Rectangle {
                 //secondaryColor: "#00ff00"//"#e0e0e0"
                 primaryColor: "#a5ecb4" //"#00ff00"//"#29b6f6"
     }
-    
+
 }
